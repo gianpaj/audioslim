@@ -2,7 +2,7 @@
 
 A desktop audio file converter and compressor built with Tauri, React, and TypeScript. Convert audio files between formats with configurable compression options powered by ffmpeg.
 
-![screenshot](./screenshot.png)]
+![screenshot](./screenshot.webp)]
 
 ## Features
 
