@@ -2,6 +2,8 @@
 
 A desktop audio file converter and compressor built with Tauri, React, and TypeScript. Convert audio files between formats with configurable compression options powered by ffmpeg.
 
+![screenshot](./screenshot.png)]
+
 ## Features
 
 - Convert audio files between MP3, WAV, AAC, OGG, FLAC, M4A, and MP4 formats

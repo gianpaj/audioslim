@@ -1,67 +1,163 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open, BaseDirectory } from "@tauri-apps/plugin-fs";
+import { listen } from "@tauri-apps/api/event";
+
+import DropZone from "./components/DropZone";
+import FormatSelector from "./components/FormatSelector";
+import OptionsPanel from "./components/OptionsPanel";
+import FileList from "./components/FileList";
+import ConvertButton from "./components/ConvertButton";
+
+import {
+  AudioFile,
+  OutputFormat,
+  ConversionOptions,
+  ConversionProgress,
+  FORMAT_CONFIGS,
+} from "./types";
 
 import "./App.css";
 
 function App() {
-  const [message, setMessage] = useState("");
-  const [loading, setLoading] = useState(false);
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    e.preventDefault();
+  const [ffmpegStatus, setFfmpegStatus] = useState<string | null>(null);
+  const [ffmpegError, setFfmpegError] = useState<string | null>(null);
+  const [files, setFiles] = useState<AudioFile[]>([]);
+  const [format, setFormat] = useState<OutputFormat>("mp3");
+  const [options, setOptions] = useState<ConversionOptions>({
+    format: "mp3",
+    bitrate: FORMAT_CONFIGS.mp3.defaultBitrate,
+  });
+  const [isConverting, setIsConverting] = useState(false);
 
-    if (!e.currentTarget.files) {
-      return;
-    }
+  // Check ffmpeg on mount
+  useEffect(() => {
+    invoke<string>("check_ffmpeg")
+      .then((version) => setFfmpegStatus(version))
+      .catch((err) => setFfmpegError(String(err)));
+  }, []);
 
-    const files = Array.from(e.currentTarget.files);
-
-    for (const file of files) {
-      if (!file.name.toLowerCase().endsWith(".wav")) {
-        setMessage("Please drop a audio file (e.g. `.wav`)");
-        return;
+  // Listen for conversion progress events
+  useEffect(() => {
+    const unlistenPromise = listen<ConversionProgress>(
+      "conversion-progress",
+      (event) => {
+        const progress = event.payload;
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.path === progress.filePath
+              ? {
+                  ...f,
+                  status: progress.status as AudioFile["status"],
+                  outputPath: progress.outputPath ?? undefined,
+                  error: progress.error ?? undefined,
+                  inputSize: progress.inputSize ?? f.inputSize,
+                  outputSize: progress.outputSize ?? f.outputSize,
+                }
+              : f
+          )
+        );
       }
-      setLoading(true);
-      console.log(file);
-      setMessage(`Converting ${file.name}...`);
+    );
 
-      try {
-        // const file = await open("foo/bar.txt", {
-        //   read: true,
-        //   baseDir: BaseDirectory.App,
-        // });
-        const result = await invoke("convert_to_mp3", {
-          inputPath: `/Users/gianpaj/Downloads/llama-sofia-luna.wav`,
-          // inputPath: `${file.webkitRelativePath}/${file.name}`,
-        });
-        setMessage(`Successfully converted to: ${result}`);
-      } catch (error) {
-        console.error(error);
-        setMessage(`Error: ${error}`);
-      }
+    return () => {
+      unlistenPromise.then((fn) => fn());
+    };
+  }, []);
 
-      setLoading(false);
+  const handleFormatChange = (newFormat: OutputFormat) => {
+    setFormat(newFormat);
+    const config = FORMAT_CONFIGS[newFormat];
+    setOptions({
+      format: newFormat,
+      bitrate: config.supportsBitrate ? config.defaultBitrate : undefined,
+      quality: config.supportsQuality ? config.defaultQuality : undefined,
+      sampleRate: undefined,
+      channels: undefined,
+    });
+  };
+
+  const handleFilesSelected = useCallback((newFiles: AudioFile[]) => {
+    setFiles((prev) => {
+      const existingPaths = new Set(prev.map((f) => f.path));
+      const uniqueNew = newFiles.filter((f) => !existingPaths.has(f.path));
+      return [...prev, ...uniqueNew];
+    });
+  }, []);
+
+  const handleRemoveFile = (index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleClearFiles = () => {
+    setFiles([]);
+  };
+
+  const handleConvert = async () => {
+    if (files.length === 0) return;
+
+    setIsConverting(true);
+    setFiles((prev) =>
+      prev.map((f) => ({
+        ...f,
+        status: "pending" as const,
+        error: undefined,
+        outputPath: undefined,
+        inputSize: undefined,
+        outputSize: undefined,
+      }))
+    );
+
+    const inputPaths = files.map((f) => f.path);
+
+    try {
+      await invoke("convert_audio", {
+        inputPaths,
+        options: { ...options, format },
+      });
+    } catch (err) {
+      console.error("Conversion error:", err);
+    } finally {
+      setIsConverting(false);
     }
   };
 
-  // const handleDragOver = (e: React.DragEvent) => {
-  //   e.preventDefault();
-  // };
+  if (ffmpegError) {
+    return (
+      <div className="container">
+        <h1>AudioSlim</h1>
+        <div className="error-banner">
+          <p>ffmpeg is required but was not found.</p>
+          <p className="error-detail">{ffmpegError}</p>
+          <p>
+            Please install ffmpeg and restart the application.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="container">
-      <h2>Drop WAV files here</h2>
-      <input
-        type="file"
-        onChange={handleFileChange}
-        disabled={loading}
-        accept=".wav, .ogg"
+      <h1>AudioSlim</h1>
+      {ffmpegStatus && <p className="ffmpeg-version">{ffmpegStatus}</p>}
+
+      <DropZone onFilesSelected={handleFilesSelected} disabled={isConverting} />
+
+      <FileList
+        files={files}
+        onRemoveFile={handleRemoveFile}
+        onClearFiles={handleClearFiles}
       />
-      {/* <div className="dropzone" onDrop={handleDrop} onDragOver={handleDragOver}>
-        </div>
-        */}
-      <p>{message}</p>
-      {loading && <p>Converting...</p>}
+
+      <FormatSelector selectedFormat={format} onChange={handleFormatChange} />
+
+      <OptionsPanel format={format} options={options} onChange={setOptions} />
+
+      <ConvertButton
+        fileCount={files.length}
+        isConverting={isConverting}
+        onConvert={handleConvert}
+      />
     </div>
   );
 }
