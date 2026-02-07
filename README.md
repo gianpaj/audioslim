@@ -2,7 +2,7 @@
 
 A desktop audio file converter and compressor built with Tauri, React, and TypeScript. Convert audio files between formats with configurable compression options powered by ffmpeg.
 
-![screenshot](./screenshot.webp)]
+![screenshot](./screenshot.webp)
 
 ## Features
 
@@ -144,10 +144,8 @@ audioslim/
 ## Recommended IDE Setup
 
 - [VS Code](https://code.visualstudio.com/) with extensions:
-  - [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode)
-  - [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
-  - [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint)
-  - [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)
+- [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode)
+- [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
 ## Contributing
 
@@ -155,10 +153,9 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Resources
 
-- [Tauri Documentation](https://tauri.app/v2/guides/)
-- [React Documentation](https://react.dev/)
-- [Vite Documentation](https://vitejs.dev/)
-- [TypeScript Documentation](https://www.typescriptlang.org/docs/)
+- [Tauri](https://tauri.app/start/)
+- [React](https://react.dev/)
+- [Vite](https://vitejs.dev/)
 
 ## License
 
