@@ -2,6 +2,11 @@
 
 A desktop audio file converter and compressor built with [Electrobun](https://electrobun.dev/), React, and TypeScript. Convert audio files between formats with configurable compression options powered by FFmpeg.
 
+```bash
+brew tap gianpaj/audioslim
+brew install --cask audioslim
+```
+
 ![screenshot](./screenshot.webp)
 
 ## Features
