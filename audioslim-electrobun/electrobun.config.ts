@@ -4,7 +4,7 @@ export default {
 	app: {
 		name: "audioslim",
 		identifier: "it.gianpaolo.audioslim.electrobun",
-		version: "0.0.1",
+		version: "0.2.0",
 	},
 	build: {
 		targets: "macos-arm64",
@@ -17,6 +17,9 @@ export default {
 		// Ignore Vite output in watch mode — HMR handles view rebuilds separately
 		watchIgnore: ["dist/**"],
 		mac: {
+			icons: "icon.iconset",
+			// codesign: true,
+			// notarize: true,
 			bundleCEF: false,
 		},
 		linux: {
@@ -28,5 +31,8 @@ export default {
 	},
 	scripts: {
 		preBuild: "scripts/prepare-ffmpeg.ts",
-	},
+  },
+  release: {
+    baseUrl: "https://github.com/gianpaj/audioslim/releases"
+  }
 } satisfies ElectrobunConfig;
