@@ -481,6 +481,7 @@ version = "0.2.0"
 dependencies = [
  "dioxus",
  "freya",
+ "freya-core",
  "rfd",
  "tokio",
 ]

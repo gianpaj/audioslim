@@ -1,4 +1,11 @@
+// Hide the console window on Windows release builds
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use freya::prelude::*;
+use freya_core::platform::CursorIcon;
 
 mod converter;
 mod types;
@@ -502,20 +509,26 @@ fn OverwriteDialog(
                         spacing: "10",
                         main_align: "end",
 
-                        rect {
-                            background: "rgb(242, 242, 247)",
-                            corner_radius: "8",
-                            padding: "10 20",
-                            onclick: move |e| on_cancel.call(e),
-                            label { font_size: "14", color: "rgb(60, 60, 67)", "Cancel" }
+                        CursorArea {
+                            icon: CursorIcon::Pointer,
+                            rect {
+                                background: "rgb(242, 242, 247)",
+                                corner_radius: "8",
+                                padding: "10 20",
+                                onclick: move |e| on_cancel.call(e),
+                                label { font_size: "14", color: "rgb(60, 60, 67)", "Cancel" }
+                            }
                         }
 
-                        rect {
-                            background: "rgb(255, 59, 48)",
-                            corner_radius: "8",
-                            padding: "10 20",
-                            onclick: move |e| on_confirm.call(e),
-                            label { font_size: "14", font_weight: "bold", color: "rgb(255, 255, 255)", "Overwrite" }
+                        CursorArea {
+                            icon: CursorIcon::Pointer,
+                            rect {
+                                background: "rgb(255, 59, 48)",
+                                corner_radius: "8",
+                                padding: "10 20",
+                                onclick: move |e| on_confirm.call(e),
+                                label { font_size: "14", font_weight: "bold", color: "rgb(255, 255, 255)", "Overwrite" }
+                            }
                         }
                     }
                 }
@@ -613,7 +626,9 @@ fn DropZoneArea(on_pick: EventHandler<MouseEvent>) -> Element {
     };
 
     rsx!(
-        rect {
+        CursorArea {
+            icon: CursorIcon::Pointer,
+            rect {
             width: "fill",
             height: "140",
             background: "{bg}",
@@ -650,6 +665,7 @@ fn DropZoneArea(on_pick: EventHandler<MouseEvent>) -> Element {
                     "Select Files"
                 }
             }
+        }
         }
     )
 }
@@ -739,18 +755,21 @@ fn ClearButton(on_clear: EventHandler<MouseEvent>) -> Element {
     };
 
     rsx!(
-        rect {
-            padding: "5 12",
-            corner_radius: "6",
-            background: "{bg}",
-            onmouseenter: move |_| hovered.set(true),
-            onmouseleave: move |_| hovered.set(false),
-            onclick: move |e| on_clear.call(e),
+        CursorArea {
+            icon: CursorIcon::Pointer,
+            rect {
+                padding: "5 12",
+                corner_radius: "6",
+                background: "{bg}",
+                onmouseenter: move |_| hovered.set(true),
+                onmouseleave: move |_| hovered.set(false),
+                onclick: move |e| on_clear.call(e),
 
-            label {
-                font_size: "12",
-                color: "rgb(100, 100, 100)",
-                "Clear all"
+                label {
+                    font_size: "12",
+                    color: "rgb(100, 100, 100)",
+                    "Clear all"
+                }
             }
         }
     )
@@ -831,21 +850,24 @@ fn RemoveButton(on_remove: EventHandler<MouseEvent>) -> Element {
     };
 
     rsx!(
-        rect {
-            width: "26",
-            height: "26",
-            corner_radius: "13",
-            background: "{bg}",
-            main_align: "center",
-            cross_align: "center",
-            onmouseenter: move |_| hovered.set(true),
-            onmouseleave: move |_| hovered.set(false),
-            onclick: move |e| on_remove.call(e),
+        CursorArea {
+            icon: CursorIcon::Pointer,
+            rect {
+                width: "26",
+                height: "26",
+                corner_radius: "13",
+                background: "{bg}",
+                main_align: "center",
+                cross_align: "center",
+                onmouseenter: move |_| hovered.set(true),
+                onmouseleave: move |_| hovered.set(false),
+                onclick: move |e| on_remove.call(e),
 
-            label {
-                font_size: "13",
-                color: "rgb(142, 142, 147)",
-                "✕"
+                label {
+                    font_size: "13",
+                    color: "rgb(142, 142, 147)",
+                    "✕"
+                }
             }
         }
     )
@@ -907,17 +929,20 @@ fn FormatChip(fmt: OutputFormat, is_active: bool, on_select: EventHandler<Output
     let fmt_clone = fmt.clone();
 
     rsx!(
-        rect {
-            background: "{bg}",
-            corner_radius: "8",
-            padding: "8 16",
-            onclick: move |_| on_select.call(fmt_clone.clone()),
+        CursorArea {
+            icon: CursorIcon::Pointer,
+            rect {
+                background: "{bg}",
+                corner_radius: "8",
+                padding: "8 16",
+                onclick: move |_| on_select.call(fmt_clone.clone()),
 
-            label {
-                font_size: "13",
-                font_weight: "bold",
-                color: "{color}",
-                "{label}"
+                label {
+                    font_size: "13",
+                    font_weight: "bold",
+                    color: "{color}",
+                    "{label}"
+                }
             }
         }
     )
@@ -1062,7 +1087,7 @@ fn OptionRow(
                         key: "{value}",
                         is_active: value == selected,
                         on_select: on_change,
-                        value,
+                        value: value.clone(),
                         display,
                     }
                 }
@@ -1091,16 +1116,19 @@ fn OptionChip(
     let val = value.clone();
 
     rsx!(
-        rect {
-            background: "{bg}",
-            corner_radius: "6",
-            padding: "6 12",
-            onclick: move |_| on_select.call(val.clone()),
+        CursorArea {
+            icon: CursorIcon::Pointer,
+            rect {
+                background: "{bg}",
+                corner_radius: "6",
+                padding: "6 12",
+                onclick: move |_| on_select.call(val.clone()),
 
-            label {
-                font_size: "12",
-                color: "{color}",
-                "{display}"
+                label {
+                    font_size: "12",
+                    color: "{color}",
+                    "{display}"
+                }
             }
         }
     )
@@ -1196,23 +1224,26 @@ fn StepButton(glyph: String, disabled: bool, on_click: EventHandler<MouseEvent>)
     };
 
     rsx!(
-        rect {
-            width: "32",
-            height: "32",
-            background: "{bg}",
-            corner_radius: "6",
-            main_align: "center",
-            cross_align: "center",
-            onclick: move |e| {
-                if !disabled {
-                    on_click.call(e);
-                }
-            },
+        CursorArea {
+            icon: if disabled { CursorIcon::Default } else { CursorIcon::Pointer },
+            rect {
+                width: "32",
+                height: "32",
+                background: "{bg}",
+                corner_radius: "6",
+                main_align: "center",
+                cross_align: "center",
+                onclick: move |e| {
+                    if !disabled {
+                        on_click.call(e);
+                    }
+                },
 
-            label {
-                font_size: "18",
-                color: "{color}",
-                "{glyph}"
+                label {
+                    font_size: "18",
+                    color: "{color}",
+                    "{glyph}"
+                }
             }
         }
     )
@@ -1254,24 +1285,27 @@ fn ConvertButtonArea(
             width: "fill",
             padding: "4 0 20 0",
 
-            rect {
-                width: "fill",
-                height: "50",
-                background: "{bg}",
-                corner_radius: "12",
-                main_align: "center",
-                cross_align: "center",
-                onclick: move |e| {
-                    if !disabled {
-                        on_convert.call(e);
-                    }
-                },
+            CursorArea {
+                icon: if disabled { CursorIcon::Default } else { CursorIcon::Pointer },
+                rect {
+                    width: "fill",
+                    height: "50",
+                    background: "{bg}",
+                    corner_radius: "12",
+                    main_align: "center",
+                    cross_align: "center",
+                    onclick: move |e| {
+                        if !disabled {
+                            on_convert.call(e);
+                        }
+                    },
 
-                label {
-                    font_size: "16",
-                    font_weight: "bold",
-                    color: "rgb(255, 255, 255)",
-                    "{text}"
+                    label {
+                        font_size: "16",
+                        font_weight: "bold",
+                        color: "rgb(255, 255, 255)",
+                        "{text}"
+                    }
                 }
             }
         }
