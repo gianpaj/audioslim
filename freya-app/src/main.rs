@@ -401,6 +401,11 @@ fn ErrorBanner(message: String) -> Element {
 }
 
 // ─── Overwrite confirmation dialog ───────────────────────────────────────────
+//
+// `width: "fill"` / `height: "fill"` do NOT resolve correctly on
+// `position: "global"` elements — they collapse to content size.
+// We use `use_platform_information()` to get the actual viewport
+// dimensions and set them explicitly on the backdrop rect.
 
 #[component]
 fn OverwriteDialog(
@@ -408,14 +413,19 @@ fn OverwriteDialog(
     on_confirm: EventHandler<MouseEvent>,
     on_cancel: EventHandler<MouseEvent>,
 ) -> Element {
+    let platform = use_platform_information();
+    let vp = platform.read().viewport_size;
+    let vw = vp.width as u32;
+    let vh = vp.height as u32;
+
     rsx!(
-        // Full-screen dimmed backdrop
+        // Full-screen dimmed backdrop — explicit pixel dimensions from viewport
         rect {
             position: "global",
             position_top: "0",
             position_left: "0",
-            width: "fill",
-            height: "fill",
+            width: "{vw}",
+            height: "{vh}",
             background: "rgb(0, 0, 0, 0.45)",
             main_align: "center",
             cross_align: "center",
