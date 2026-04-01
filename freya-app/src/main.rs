@@ -28,6 +28,8 @@ fn App() -> Element {
     let mut ffmpeg_error: Signal<Option<String>> = use_signal(|| None);
     // App-level error shown below the Convert button (separate from per-file errors)
     let mut app_error: Signal<Option<String>> = use_signal(|| None);
+    // Success toast — auto-dismissed after a few seconds
+    let mut toast: Signal<Option<String>> = use_signal(|| None);
     let mut next_id: Signal<usize> = use_signal(|| 0);
 
     // Check FFmpeg availability on startup
@@ -90,6 +92,7 @@ fn App() -> Element {
     // Clear all files
     let clear_files = move |_| {
         app_error.set(None);
+        toast.set(None);
         files.set(Vec::new());
     };
 
@@ -117,8 +120,9 @@ fn App() -> Element {
             return;
         }
 
-        // Clear any previous app-level error
+        // Clear any previous app-level error and toast
         app_error.set(None);
+        toast.set(None);
 
         // Reset per-file statuses
         let reset: Vec<AudioFile> = snapshot
@@ -196,6 +200,30 @@ fn App() -> Element {
 
             eprintln!("[AudioSlim] Batch done");
             is_converting.set(false);
+
+            // Count outcomes and show success toast
+            let final_files = files.read().clone();
+            let done_count = final_files.iter().filter(|f| f.status == FileStatus::Done).count();
+            let err_count = final_files.iter().filter(|f| f.status == FileStatus::Error).count();
+            eprintln!("[AudioSlim] Results: {} done, {} errors", done_count, err_count);
+
+            if done_count > 0 {
+                let msg = if err_count > 0 {
+                    format!("{} converted  ·  {} failed", done_count, err_count)
+                } else {
+                    format!(
+                        "{} file{} converted successfully",
+                        done_count,
+                        if done_count == 1 { "" } else { "s" }
+                    )
+                };
+                toast.set(Some(msg));
+                // Auto-dismiss after 4 seconds
+                spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    toast.set(None);
+                });
+            }
         });
     };
 
@@ -206,6 +234,7 @@ fn App() -> Element {
     let version = ffmpeg_version.read().clone();
     let ffmpeg_err = ffmpeg_error.read().clone();
     let conv_err = app_error.read().clone();
+    let toast_msg = toast.read().clone();
     // Disable convert if we confirmed FFmpeg is missing
     let ffmpeg_missing = ffmpeg_err.is_some();
 
@@ -271,6 +300,14 @@ fn App() -> Element {
                     if let Some(ref err) = conv_err {
                         ErrorBanner { message: err.clone() }
                     }
+                }
+            }
+
+            // ── Success toast (absolute overlay, bottom-right) ───────────
+            if let Some(ref msg) = toast_msg {
+                Toast {
+                    message: msg.clone(),
+                    on_dismiss: move |_| toast.set(None),
                 }
             }
         }
@@ -340,6 +377,77 @@ fn ErrorBanner(message: String) -> Element {
                 font_size: "12",
                 color: "rgb(180, 0, 0)",
                 "{message}"
+            }
+        }
+    )
+}
+
+// ─── Toast notification ──────────────────────────────────────────────────────
+
+#[component]
+fn Toast(message: String, on_dismiss: EventHandler<MouseEvent>) -> Element {
+    let mut hovered = use_signal(|| false);
+    let close_bg = if *hovered.read() {
+        "rgb(255, 255, 255, 0.35)"
+    } else {
+        "rgb(255, 255, 255, 0.2)"
+    };
+
+    rsx!(
+        rect {
+            position: "absolute",
+            position_bottom: "30",
+            position_right: "30",
+            background: "rgb(52, 199, 89)",
+            corner_radius: "14",
+            padding: "14 18",
+            shadow: "0 8 24 0 rgb(0, 0, 0, 0.18)",
+            direction: "horizontal",
+            cross_align: "center",
+            spacing: "12",
+
+            // Checkmark icon
+            rect {
+                width: "28",
+                height: "28",
+                corner_radius: "14",
+                background: "rgb(255, 255, 255, 0.25)",
+                main_align: "center",
+                cross_align: "center",
+
+                label {
+                    font_size: "14",
+                    font_weight: "bold",
+                    color: "rgb(255, 255, 255)",
+                    "✓"
+                }
+            }
+
+            // Message
+            label {
+                font_size: "14",
+                font_weight: "bold",
+                color: "rgb(255, 255, 255)",
+                "{message}"
+            }
+
+            // Dismiss button
+            rect {
+                width: "24",
+                height: "24",
+                corner_radius: "12",
+                background: "{close_bg}",
+                main_align: "center",
+                cross_align: "center",
+                onmouseenter: move |_| hovered.set(true),
+                onmouseleave: move |_| hovered.set(false),
+                onclick: move |e| on_dismiss.call(e),
+
+                label {
+                    font_size: "11",
+                    color: "rgb(255, 255, 255)",
+                    "✕"
+                }
             }
         }
     )
