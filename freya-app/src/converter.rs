@@ -7,6 +7,7 @@ use crate::types::{ConversionOptions, OutputFormat};
 pub async fn resolve_ffmpeg() -> Option<String> {
     // Check environment override first
     if let Ok(path) = std::env::var("AUDIOSLIM_FFMPEG_PATH") {
+        eprintln!("[converter] Trying AUDIOSLIM_FFMPEG_PATH: {}", path);
         if tokio::fs::metadata(&path).await.is_ok() {
             return Some(path);
         }
@@ -38,6 +39,7 @@ pub async fn resolve_ffmpeg() -> Option<String> {
         "/opt/local/bin/ffmpeg",
     ] {
         if tokio::fs::metadata(candidate).await.is_ok() {
+            eprintln!("[converter] Found ffmpeg at system path: {}", candidate);
             return Some(candidate.to_string());
         }
     }
@@ -47,11 +49,13 @@ pub async fn resolve_ffmpeg() -> Option<String> {
         if output.status.success() {
             let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !p.is_empty() {
+                eprintln!("[converter] Found ffmpeg via PATH: {}", p);
                 return Some(p);
             }
         }
     }
 
+    eprintln!("[converter] FFmpeg not found anywhere");
     None
 }
 
@@ -190,6 +194,7 @@ pub async fn convert_audio(input: &str, opts: &ConversionOptions) -> ConversionR
     };
 
     let args = build_ffmpeg_args(input, &output_path, opts);
+    eprintln!("[converter] Running: {} {}", ffmpeg, args.join(" "));
 
     let result = Command::new(&ffmpeg)
         .args(&args)

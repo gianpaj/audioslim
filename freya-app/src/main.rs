@@ -26,14 +26,23 @@ fn App() -> Element {
     let mut is_converting = use_signal(|| false);
     let mut ffmpeg_version: Signal<Option<String>> = use_signal(|| None);
     let mut ffmpeg_error: Signal<Option<String>> = use_signal(|| None);
+    // App-level error shown below the Convert button (separate from per-file errors)
+    let mut app_error: Signal<Option<String>> = use_signal(|| None);
     let mut next_id: Signal<usize> = use_signal(|| 0);
 
     // Check FFmpeg availability on startup
     use_effect(move || {
         spawn(async move {
+            eprintln!("[AudioSlim] Checking FFmpeg...");
             match converter::check_ffmpeg().await {
-                Ok(v) => ffmpeg_version.set(Some(v)),
-                Err(e) => ffmpeg_error.set(Some(e)),
+                Ok(v) => {
+                    eprintln!("[AudioSlim] FFmpeg OK: {}", v);
+                    ffmpeg_version.set(Some(v));
+                }
+                Err(e) => {
+                    eprintln!("[AudioSlim] FFmpeg error: {}", e);
+                    ffmpeg_error.set(Some(e));
+                }
             }
         });
     });
@@ -41,6 +50,7 @@ fn App() -> Element {
     // File picker
     let pick_files = move |_| {
         spawn(async move {
+            eprintln!("[AudioSlim] Opening file picker...");
             let handles = rfd::AsyncFileDialog::new()
                 .add_filter(
                     "Audio Files",
@@ -55,13 +65,17 @@ fn App() -> Element {
                 let mut id = *next_id.read();
                 for h in handles {
                     let path = h.path().to_string_lossy().to_string();
+                    eprintln!("[AudioSlim] File selected: {}", path);
                     if !current.iter().any(|f| f.path == path) {
                         current.push(AudioFile::new(id, path));
                         id += 1;
                     }
                 }
+                eprintln!("[AudioSlim] Total files: {}", current.len());
                 files.set(current);
                 next_id.set(id);
+            } else {
+                eprintln!("[AudioSlim] File picker cancelled");
             }
         });
     };
@@ -74,7 +88,10 @@ fn App() -> Element {
     };
 
     // Clear all files
-    let clear_files = move |_| files.set(Vec::new());
+    let clear_files = move |_| {
+        app_error.set(None);
+        files.set(Vec::new());
+    };
 
     // Format change → reset options for new format
     let change_format = move |new_format: OutputFormat| {
@@ -87,11 +104,23 @@ fn App() -> Element {
         let snapshot = files.read().clone();
         let current_opts = opts.read().clone();
 
+        eprintln!("[AudioSlim] Convert clicked. Files: {}, converting: {}", snapshot.len(), *is_converting.read());
+
         if snapshot.is_empty() || *is_converting.read() {
             return;
         }
 
-        // Reset statuses
+        // Fail fast if we already know FFmpeg is missing
+        if let Some(ref err) = *ffmpeg_error.read() {
+            app_error.set(Some(format!("FFmpeg not available: {}", err)));
+            eprintln!("[AudioSlim] Blocked: FFmpeg missing");
+            return;
+        }
+
+        // Clear any previous app-level error
+        app_error.set(None);
+
+        // Reset per-file statuses
         let reset: Vec<AudioFile> = snapshot
             .iter()
             .map(|f| AudioFile {
@@ -105,10 +134,27 @@ fn App() -> Element {
             .collect();
         files.set(reset.clone());
         is_converting.set(true);
+        eprintln!("[AudioSlim] Starting conversion of {} file(s)", reset.len());
 
         spawn(async move {
+            // Verify FFmpeg is reachable before starting the batch
+            if let Err(e) = converter::check_ffmpeg().await {
+                eprintln!("[AudioSlim] FFmpeg check failed in spawn: {}", e);
+                app_error.set(Some(format!("FFmpeg error: {}", e)));
+                // Mark all files as errored
+                let mut current = files.read().clone();
+                for f in current.iter_mut() {
+                    f.status = FileStatus::Error;
+                    f.error = Some(e.clone());
+                }
+                files.set(current);
+                is_converting.set(false);
+                return;
+            }
+
             for file_data in &reset {
                 let path = file_data.path.clone();
+                eprintln!("[AudioSlim] Converting: {}", path);
 
                 // Mark as converting
                 {
@@ -126,19 +172,29 @@ fn App() -> Element {
                     let mut current = files.read().clone();
                     if let Some(f) = current.iter_mut().find(|f| f.path == path) {
                         if result.success {
+                            eprintln!("[AudioSlim] Done: {} -> {} bytes", path, result.output_size);
                             f.status = FileStatus::Done;
                             f.output_path = Some(result.output_path);
                             f.input_size = Some(result.input_size);
                             f.output_size = Some(result.output_size);
                         } else {
+                            eprintln!("[AudioSlim] Error on {}: {:?}", path, result.error);
                             f.status = FileStatus::Error;
-                            f.error = result.error;
+                            f.error = result.error.clone();
+                            // Surface first file error at app level too
+                            if app_error.read().is_none() {
+                                app_error.set(result.error.map(|e| {
+                                    let short = if e.len() > 200 { e[..200].to_string() } else { e };
+                                    format!("Conversion failed: {}", short)
+                                }));
+                            }
                         }
                     }
                     files.set(current);
                 }
             }
 
+            eprintln!("[AudioSlim] Batch done");
             is_converting.set(false);
         });
     };
@@ -148,7 +204,10 @@ fn App() -> Element {
     let current_format = format.read().clone();
     let current_opts = opts.read().clone();
     let version = ffmpeg_version.read().clone();
-    let error = ffmpeg_error.read().clone();
+    let ffmpeg_err = ffmpeg_error.read().clone();
+    let conv_err = app_error.read().clone();
+    // Disable convert if we confirmed FFmpeg is missing
+    let ffmpeg_missing = ffmpeg_err.is_some();
 
     rsx!(
         rect {
@@ -158,19 +217,12 @@ fn App() -> Element {
             direction: "vertical",
 
             // ── Header bar ──────────────────────────────────────────────
-            AppHeader { version, error: error.clone() }
+            AppHeader { version, ffmpeg_error: ffmpeg_err.clone() }
 
             // ── FFmpeg error banner ──────────────────────────────────────
-            if error.is_some() {
-                rect {
-                    width: "fill",
-                    background: "rgb(255, 235, 235)",
-                    padding: "10 20",
-                    label {
-                        font_size: "13",
-                        color: "rgb(180, 0, 0)",
-                        "FFmpeg not available. Install via Homebrew: brew install ffmpeg"
-                    }
+            if let Some(ref err) = ffmpeg_err {
+                ErrorBanner {
+                    message: format!("FFmpeg not found: {}  ·  brew install ffmpeg", err),
                 }
             }
 
@@ -211,7 +263,13 @@ fn App() -> Element {
                     ConvertButtonArea {
                         file_count,
                         is_converting: converting,
+                        ffmpeg_missing,
                         on_convert: convert,
+                    }
+
+                    // App-level error (ffmpeg path, permission, etc.)
+                    if let Some(ref err) = conv_err {
+                        ErrorBanner { message: err.clone() }
                     }
                 }
             }
@@ -222,7 +280,13 @@ fn App() -> Element {
 // ─── Header ─────────────────────────────────────────────────────────────────
 
 #[component]
-fn AppHeader(version: Option<String>, error: Option<String>) -> Element {
+fn AppHeader(version: Option<String>, ffmpeg_error: Option<String>) -> Element {
+    let status = match (&version, &ffmpeg_error) {
+        (Some(v), _) => Some((v.clone(), "rgb(142, 142, 147)")),
+        (_, Some(_)) => Some(("FFmpeg not found".to_string(), "rgb(255, 59, 48)")),
+        _ => Some(("Checking FFmpeg...".to_string(), "rgb(174, 174, 178)")),
+    };
+
     rsx!(
         rect {
             width: "fill",
@@ -243,18 +307,39 @@ fn AppHeader(version: Option<String>, error: Option<String>) -> Element {
 
             rect { width: "fill" }
 
-            if let Some(v) = version {
+            if let Some((text, color)) = status {
                 label {
                     font_size: "11",
-                    color: "rgb(142, 142, 147)",
-                    "{v}"
+                    color: "{color}",
+                    "{text}"
                 }
-            } else if error.is_some() {
-                label {
-                    font_size: "11",
-                    color: "rgb(255, 59, 48)",
-                    "FFmpeg not found"
-                }
+            }
+        }
+    )
+}
+
+#[component]
+fn ErrorBanner(message: String) -> Element {
+    rsx!(
+        rect {
+            width: "fill",
+            background: "rgb(255, 59, 48, 0.1)",
+            border: "1 solid rgb(255, 59, 48, 0.3)",
+            corner_radius: "10",
+            padding: "12 16",
+            direction: "horizontal",
+            spacing: "8",
+            cross_align: "center",
+
+            label {
+                font_size: "14",
+                "⚠"
+            }
+
+            label {
+                font_size: "12",
+                color: "rgb(180, 0, 0)",
+                "{message}"
             }
         }
     )
@@ -889,9 +974,10 @@ fn StepButton(glyph: String, disabled: bool, on_click: EventHandler<MouseEvent>)
 fn ConvertButtonArea(
     file_count: usize,
     is_converting: bool,
+    ffmpeg_missing: bool,
     on_convert: EventHandler<MouseEvent>,
 ) -> Element {
-    let disabled = file_count == 0 || is_converting;
+    let disabled = file_count == 0 || is_converting || ffmpeg_missing;
 
     let bg = if disabled {
         "rgb(209, 209, 214)"
@@ -899,7 +985,9 @@ fn ConvertButtonArea(
         "rgb(0, 122, 255)"
     };
 
-    let text = if is_converting {
+    let text = if ffmpeg_missing {
+        "FFmpeg not installed".to_string()
+    } else if is_converting {
         "Converting...".to_string()
     } else if file_count == 0 {
         "Select files to convert".to_string()
