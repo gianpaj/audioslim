@@ -5,6 +5,96 @@ mod types;
 
 use types::*;
 
+// ─── Shared async batch runner ───────────────────────────────────────────────
+// Called from both the direct-convert and the overwrite-confirmed paths.
+
+async fn run_batch(
+    mut files: Signal<Vec<AudioFile>>,
+    mut app_error: Signal<Option<String>>,
+    mut toast: Signal<Option<String>>,
+    mut is_converting: Signal<bool>,
+    file_list: Vec<AudioFile>,
+    opts: ConversionOptions,
+) {
+    // Verify FFmpeg before starting
+    if let Err(e) = converter::check_ffmpeg().await {
+        eprintln!("[AudioSlim] FFmpeg check failed: {}", e);
+        app_error.set(Some(format!("FFmpeg error: {}", e)));
+        let mut current = files.read().clone();
+        for f in current.iter_mut() {
+            f.status = FileStatus::Error;
+            f.error = Some(e.clone());
+        }
+        files.set(current);
+        is_converting.set(false);
+        return;
+    }
+
+    for file_data in &file_list {
+        let path = file_data.path.clone();
+        eprintln!("[AudioSlim] Converting: {}", path);
+
+        {
+            let mut current = files.read().clone();
+            if let Some(f) = current.iter_mut().find(|f| f.path == path) {
+                f.status = FileStatus::Converting;
+            }
+            files.set(current);
+        }
+
+        let result = converter::convert_audio(&path, &opts).await;
+
+        {
+            let mut current = files.read().clone();
+            if let Some(f) = current.iter_mut().find(|f| f.path == path) {
+                if result.success {
+                    eprintln!("[AudioSlim] Done: {} → {} bytes", path, result.output_size);
+                    f.status = FileStatus::Done;
+                    f.output_path = Some(result.output_path);
+                    f.input_size = Some(result.input_size);
+                    f.output_size = Some(result.output_size);
+                } else {
+                    eprintln!("[AudioSlim] Error on {}: {:?}", path, result.error);
+                    f.status = FileStatus::Error;
+                    f.error = result.error.clone();
+                    if app_error.read().is_none() {
+                        app_error.set(result.error.map(|e| {
+                            let short = if e.len() > 200 { e[..200].to_string() } else { e };
+                            format!("Conversion failed: {}", short)
+                        }));
+                    }
+                }
+            }
+            files.set(current);
+        }
+    }
+
+    is_converting.set(false);
+    eprintln!("[AudioSlim] Batch done");
+
+    let final_files = files.read().clone();
+    let done_count = final_files.iter().filter(|f| f.status == FileStatus::Done).count();
+    let err_count = final_files.iter().filter(|f| f.status == FileStatus::Error).count();
+    eprintln!("[AudioSlim] Results: {} done, {} errors", done_count, err_count);
+
+    if done_count > 0 {
+        let msg = if err_count > 0 {
+            format!("{} converted  ·  {} failed", done_count, err_count)
+        } else {
+            format!(
+                "{} file{} converted successfully",
+                done_count,
+                if done_count == 1 { "" } else { "s" }
+            )
+        };
+        toast.set(Some(msg));
+        spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            toast.set(None);
+        });
+    }
+}
+
 // ─── Entry point ────────────────────────────────────────────────────────────
 
 fn main() {
@@ -26,25 +116,22 @@ fn App() -> Element {
     let mut is_converting = use_signal(|| false);
     let mut ffmpeg_version: Signal<Option<String>> = use_signal(|| None);
     let mut ffmpeg_error: Signal<Option<String>> = use_signal(|| None);
-    // App-level error shown below the Convert button (separate from per-file errors)
     let mut app_error: Signal<Option<String>> = use_signal(|| None);
-    // Success toast — auto-dismissed after a few seconds
     let mut toast: Signal<Option<String>> = use_signal(|| None);
     let mut next_id: Signal<usize> = use_signal(|| 0);
+    // Overwrite confirmation: holds the output paths that already exist
+    let mut overwrite_targets: Signal<Vec<String>> = use_signal(Vec::new);
+    // Snapshot kept while waiting for user confirmation
+    let mut pending_files: Signal<Vec<AudioFile>> = use_signal(Vec::new);
+    let mut pending_opts: Signal<ConversionOptions> = use_signal(ConversionOptions::default);
 
     // Check FFmpeg availability on startup
     use_effect(move || {
         spawn(async move {
             eprintln!("[AudioSlim] Checking FFmpeg...");
             match converter::check_ffmpeg().await {
-                Ok(v) => {
-                    eprintln!("[AudioSlim] FFmpeg OK: {}", v);
-                    ffmpeg_version.set(Some(v));
-                }
-                Err(e) => {
-                    eprintln!("[AudioSlim] FFmpeg error: {}", e);
-                    ffmpeg_error.set(Some(e));
-                }
+                Ok(v) => { eprintln!("[AudioSlim] FFmpeg OK: {v}"); ffmpeg_version.set(Some(v)); }
+                Err(e) => { eprintln!("[AudioSlim] FFmpeg error: {e}"); ffmpeg_error.set(Some(e)); }
             }
         });
     });
@@ -52,181 +139,110 @@ fn App() -> Element {
     // File picker
     let pick_files = move |_| {
         spawn(async move {
-            eprintln!("[AudioSlim] Opening file picker...");
             let handles = rfd::AsyncFileDialog::new()
-                .add_filter(
-                    "Audio Files",
-                    &["wav", "mp3", "ogg", "flac", "aac", "m4a", "mp4", "wma", "aiff"],
-                )
+                .add_filter("Audio Files", &["wav","mp3","ogg","flac","aac","m4a","mp4","wma","aiff"])
                 .set_title("Select Audio Files")
                 .pick_files()
                 .await;
-
             if let Some(handles) = handles {
                 let mut current = files.read().clone();
                 let mut id = *next_id.read();
                 for h in handles {
                     let path = h.path().to_string_lossy().to_string();
-                    eprintln!("[AudioSlim] File selected: {}", path);
+                    eprintln!("[AudioSlim] File selected: {path}");
                     if !current.iter().any(|f| f.path == path) {
                         current.push(AudioFile::new(id, path));
                         id += 1;
                     }
                 }
-                eprintln!("[AudioSlim] Total files: {}", current.len());
                 files.set(current);
                 next_id.set(id);
-            } else {
-                eprintln!("[AudioSlim] File picker cancelled");
             }
         });
     };
 
-    // Remove single file
     let remove_file = move |id: usize| {
         let mut current = files.read().clone();
         current.retain(|f| f.id != id);
         files.set(current);
     };
 
-    // Clear all files
     let clear_files = move |_| {
         app_error.set(None);
         toast.set(None);
+        overwrite_targets.set(Vec::new());
         files.set(Vec::new());
     };
 
-    // Format change → reset options for new format
     let change_format = move |new_format: OutputFormat| {
         opts.set(ConversionOptions::from_format(new_format.clone()));
         format.set(new_format);
     };
 
-    // Conversion
-    let convert = move |_| {
+    // Helper: build reset file list from current files signal
+    let make_reset = |snapshot: &[AudioFile]| -> Vec<AudioFile> {
+        snapshot.iter().map(|f| AudioFile {
+            status: FileStatus::Pending,
+            output_path: None,
+            error: None,
+            input_size: None,
+            output_size: None,
+            ..f.clone()
+        }).collect()
+    };
+
+    // ── Convert button clicked ───────────────────────────────────────────────
+    let on_convert = move |_| {
         let snapshot = files.read().clone();
         let current_opts = opts.read().clone();
 
-        eprintln!("[AudioSlim] Convert clicked. Files: {}, converting: {}", snapshot.len(), *is_converting.read());
+        eprintln!("[AudioSlim] Convert clicked. {} file(s)", snapshot.len());
 
-        if snapshot.is_empty() || *is_converting.read() {
-            return;
-        }
+        if snapshot.is_empty() || *is_converting.read() { return; }
 
-        // Fail fast if we already know FFmpeg is missing
         if let Some(ref err) = *ffmpeg_error.read() {
             app_error.set(Some(format!("FFmpeg not available: {}", err)));
-            eprintln!("[AudioSlim] Blocked: FFmpeg missing");
             return;
         }
 
-        // Clear any previous app-level error and toast
         app_error.set(None);
         toast.set(None);
 
-        // Reset per-file statuses
-        let reset: Vec<AudioFile> = snapshot
-            .iter()
-            .map(|f| AudioFile {
-                status: FileStatus::Pending,
-                output_path: None,
-                error: None,
-                input_size: None,
-                output_size: None,
-                ..f.clone()
-            })
-            .collect();
-        files.set(reset.clone());
-        is_converting.set(true);
-        eprintln!("[AudioSlim] Starting conversion of {} file(s)", reset.len());
+        let input_paths: Vec<String> = snapshot.iter().map(|f| f.path.clone()).collect();
+        let conflicts = converter::find_overwrite_targets(&input_paths, &current_opts.format);
 
-        spawn(async move {
-            // Verify FFmpeg is reachable before starting the batch
-            if let Err(e) = converter::check_ffmpeg().await {
-                eprintln!("[AudioSlim] FFmpeg check failed in spawn: {}", e);
-                app_error.set(Some(format!("FFmpeg error: {}", e)));
-                // Mark all files as errored
-                let mut current = files.read().clone();
-                for f in current.iter_mut() {
-                    f.status = FileStatus::Error;
-                    f.error = Some(e.clone());
-                }
-                files.set(current);
-                is_converting.set(false);
-                return;
-            }
-
-            for file_data in &reset {
-                let path = file_data.path.clone();
-                eprintln!("[AudioSlim] Converting: {}", path);
-
-                // Mark as converting
-                {
-                    let mut current = files.read().clone();
-                    if let Some(f) = current.iter_mut().find(|f| f.path == path) {
-                        f.status = FileStatus::Converting;
-                    }
-                    files.set(current);
-                }
-
-                let result = converter::convert_audio(&path, &current_opts).await;
-
-                // Update with result
-                {
-                    let mut current = files.read().clone();
-                    if let Some(f) = current.iter_mut().find(|f| f.path == path) {
-                        if result.success {
-                            eprintln!("[AudioSlim] Done: {} -> {} bytes", path, result.output_size);
-                            f.status = FileStatus::Done;
-                            f.output_path = Some(result.output_path);
-                            f.input_size = Some(result.input_size);
-                            f.output_size = Some(result.output_size);
-                        } else {
-                            eprintln!("[AudioSlim] Error on {}: {:?}", path, result.error);
-                            f.status = FileStatus::Error;
-                            f.error = result.error.clone();
-                            // Surface first file error at app level too
-                            if app_error.read().is_none() {
-                                app_error.set(result.error.map(|e| {
-                                    let short = if e.len() > 200 { e[..200].to_string() } else { e };
-                                    format!("Conversion failed: {}", short)
-                                }));
-                            }
-                        }
-                    }
-                    files.set(current);
-                }
-            }
-
-            eprintln!("[AudioSlim] Batch done");
-            is_converting.set(false);
-
-            // Count outcomes and show success toast
-            let final_files = files.read().clone();
-            let done_count = final_files.iter().filter(|f| f.status == FileStatus::Done).count();
-            let err_count = final_files.iter().filter(|f| f.status == FileStatus::Error).count();
-            eprintln!("[AudioSlim] Results: {} done, {} errors", done_count, err_count);
-
-            if done_count > 0 {
-                let msg = if err_count > 0 {
-                    format!("{} converted  ·  {} failed", done_count, err_count)
-                } else {
-                    format!(
-                        "{} file{} converted successfully",
-                        done_count,
-                        if done_count == 1 { "" } else { "s" }
-                    )
-                };
-                toast.set(Some(msg));
-                // Auto-dismiss after 4 seconds
-                spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-                    toast.set(None);
-                });
-            }
-        });
+        if !conflicts.is_empty() {
+            eprintln!("[AudioSlim] Overwrite confirmation needed: {:?}", conflicts);
+            // Stash data and show dialog — don't start conversion yet
+            let reset = make_reset(&snapshot);
+            pending_files.set(reset);
+            pending_opts.set(current_opts);
+            overwrite_targets.set(conflicts);
+        } else {
+            // No conflicts — convert immediately
+            let reset = make_reset(&snapshot);
+            files.set(reset.clone());
+            is_converting.set(true);
+            spawn(run_batch(files, app_error, toast, is_converting, reset, current_opts));
+        }
     };
 
+    // ── User confirmed overwrite ─────────────────────────────────────────────
+    let on_confirm_overwrite = move |_| {
+        let file_list = pending_files.read().clone();
+        let current_opts = pending_opts.read().clone();
+        overwrite_targets.set(Vec::new());
+        files.set(file_list.clone());
+        is_converting.set(true);
+        spawn(run_batch(files, app_error, toast, is_converting, file_list, current_opts));
+    };
+
+    let on_cancel_overwrite = move |_| {
+        overwrite_targets.set(Vec::new());
+        pending_files.set(Vec::new());
+    };
+
+    // ── Render snapshots ─────────────────────────────────────────────────────
     let file_count = files.read().len();
     let converting = *is_converting.read();
     let current_format = format.read().clone();
@@ -235,7 +251,7 @@ fn App() -> Element {
     let ffmpeg_err = ffmpeg_error.read().clone();
     let conv_err = app_error.read().clone();
     let toast_msg = toast.read().clone();
-    // Disable convert if we confirmed FFmpeg is missing
+    let overwrite_list = overwrite_targets.read().clone();
     let ffmpeg_missing = ffmpeg_err.is_some();
 
     rsx!(
@@ -245,17 +261,14 @@ fn App() -> Element {
             background: "rgb(242, 242, 247)",
             direction: "vertical",
 
-            // ── Header bar ──────────────────────────────────────────────
             AppHeader { version, ffmpeg_error: ffmpeg_err.clone() }
 
-            // ── FFmpeg error banner ──────────────────────────────────────
             if let Some(ref err) = ffmpeg_err {
                 ErrorBanner {
                     message: format!("FFmpeg not found: {}  ·  brew install ffmpeg", err),
                 }
             }
 
-            // ── Scrollable body ──────────────────────────────────────────
             ScrollView {
                 width: "fill",
                 height: "fill",
@@ -279,10 +292,7 @@ fn App() -> Element {
                         }
                     }
 
-                    FormatSelectorArea {
-                        selected: current_format,
-                        on_change: change_format,
-                    }
+                    FormatSelectorArea { selected: current_format, on_change: change_format }
 
                     OptionsPanelArea {
                         opts: current_opts,
@@ -293,21 +303,28 @@ fn App() -> Element {
                         file_count,
                         is_converting: converting,
                         ffmpeg_missing,
-                        on_convert: convert,
+                        on_convert,
                     }
 
-                    // App-level error (ffmpeg path, permission, etc.)
                     if let Some(ref err) = conv_err {
                         ErrorBanner { message: err.clone() }
                     }
                 }
             }
 
-            // ── Success toast (absolute overlay, bottom-right) ───────────
+            // ── Overlays (rendered on top via position: "global") ────────
             if let Some(ref msg) = toast_msg {
                 Toast {
                     message: msg.clone(),
                     on_dismiss: move |_| toast.set(None),
+                }
+            }
+
+            if !overwrite_list.is_empty() {
+                OverwriteDialog {
+                    paths: overwrite_list,
+                    on_confirm: on_confirm_overwrite,
+                    on_cancel: on_cancel_overwrite,
                 }
             }
         }
@@ -318,37 +335,38 @@ fn App() -> Element {
 
 #[component]
 fn AppHeader(version: Option<String>, ffmpeg_error: Option<String>) -> Element {
-    let status = match (&version, &ffmpeg_error) {
-        (Some(v), _) => Some((v.clone(), "rgb(142, 142, 147)")),
-        (_, Some(_)) => Some(("FFmpeg not found".to_string(), "rgb(255, 59, 48)")),
-        _ => Some(("Checking FFmpeg...".to_string(), "rgb(174, 174, 178)")),
+    let (status_text, status_color) = match (&version, &ffmpeg_error) {
+        (Some(v), _) => (v.clone(), "rgb(142, 142, 147)"),
+        (_, Some(_)) => ("FFmpeg not found".to_string(), "rgb(255, 59, 48)"),
+        _ => ("Checking FFmpeg...".to_string(), "rgb(174, 174, 178)"),
     };
 
     rsx!(
         rect {
             width: "fill",
-            height: "56",
+            height: "60",
             background: "rgb(255, 255, 255)",
             shadow: "0 1 4 0 rgb(0, 0, 0, 0.08)",
             padding: "0 24",
             direction: "horizontal",
             cross_align: "center",
-            spacing: "12",
 
-            label {
-                font_size: "18",
-                font_weight: "bold",
-                color: "rgb(0, 0, 0)",
-                "AudioSlim"
-            }
+            // Title + status stacked vertically on the left
+            rect {
+                direction: "vertical",
+                spacing: "2",
 
-            rect { width: "fill" }
+                label {
+                    font_size: "18",
+                    font_weight: "bold",
+                    color: "rgb(0, 0, 0)",
+                    "AudioSlim"
+                }
 
-            if let Some((text, color)) = status {
                 label {
                     font_size: "11",
-                    color: "{color}",
-                    "{text}"
+                    color: "{status_color}",
+                    "{status_text}"
                 }
             }
         }
@@ -382,6 +400,110 @@ fn ErrorBanner(message: String) -> Element {
     )
 }
 
+// ─── Overwrite confirmation dialog ───────────────────────────────────────────
+
+#[component]
+fn OverwriteDialog(
+    paths: Vec<String>,
+    on_confirm: EventHandler<MouseEvent>,
+    on_cancel: EventHandler<MouseEvent>,
+) -> Element {
+    rsx!(
+        // Full-screen dimmed backdrop
+        rect {
+            position: "global",
+            position_top: "0",
+            position_left: "0",
+            width: "fill",
+            height: "fill",
+            background: "rgb(0, 0, 0, 0.45)",
+            main_align: "center",
+            cross_align: "center",
+
+            // Dialog card
+            rect {
+                width: "480",
+                background: "rgb(255, 255, 255)",
+                corner_radius: "16",
+                padding: "28",
+                direction: "vertical",
+                spacing: "16",
+                shadow: "0 20 60 0 rgb(0, 0, 0, 0.25)",
+
+                // Title
+                label {
+                    font_size: "17",
+                    font_weight: "bold",
+                    color: "rgb(0, 0, 0)",
+                    "Overwrite existing files?"
+                }
+
+                // Subtitle
+                label {
+                    font_size: "13",
+                    color: "rgb(100, 100, 100)",
+                    "The following output files already exist and will be replaced:"
+                }
+
+                // Path list
+                rect {
+                    width: "fill",
+                    background: "rgb(242, 242, 247)",
+                    corner_radius: "8",
+                    padding: "12",
+                    direction: "vertical",
+                    spacing: "6",
+
+                    for path in paths.iter() {
+                        label {
+                            font_size: "11",
+                            color: "rgb(60, 60, 67)",
+                            "• {path}"
+                        }
+                    }
+                }
+
+                // Buttons row
+                rect {
+                    width: "fill",
+                    direction: "horizontal",
+                    spacing: "10",
+                    main_align: "end",
+
+                    // Cancel
+                    rect {
+                        background: "rgb(242, 242, 247)",
+                        corner_radius: "8",
+                        padding: "10 20",
+                        onclick: move |e| on_cancel.call(e),
+
+                        label {
+                            font_size: "14",
+                            color: "rgb(60, 60, 67)",
+                            "Cancel"
+                        }
+                    }
+
+                    // Overwrite (destructive red)
+                    rect {
+                        background: "rgb(255, 59, 48)",
+                        corner_radius: "8",
+                        padding: "10 20",
+                        onclick: move |e| on_confirm.call(e),
+
+                        label {
+                            font_size: "14",
+                            font_weight: "bold",
+                            color: "rgb(255, 255, 255)",
+                            "Overwrite"
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
 // ─── Toast notification ──────────────────────────────────────────────────────
 
 #[component]
@@ -395,7 +517,7 @@ fn Toast(message: String, on_dismiss: EventHandler<MouseEvent>) -> Element {
 
     rsx!(
         rect {
-            position: "absolute",
+            position: "global",
             position_bottom: "30",
             position_right: "30",
             background: "rgb(52, 199, 89)",

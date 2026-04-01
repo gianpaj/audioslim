@@ -164,6 +164,15 @@ pub fn build_ffmpeg_args(input: &str, output: &str, opts: &ConversionOptions) ->
     args
 }
 
+/// Returns output paths that already exist on disk (would be overwritten).
+pub fn find_overwrite_targets(input_paths: &[String], format: &OutputFormat) -> Vec<String> {
+    input_paths
+        .iter()
+        .map(|p| build_output_path(p, format))
+        .filter(|out| std::path::Path::new(out).exists())
+        .collect()
+}
+
 pub struct ConversionResult {
     pub success: bool,
     pub output_path: String,
