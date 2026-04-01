@@ -402,10 +402,15 @@ fn ErrorBanner(message: String) -> Element {
 
 // ─── Overwrite confirmation dialog ───────────────────────────────────────────
 //
-// `width: "fill"` / `height: "fill"` do NOT resolve correctly on
-// `position: "global"` elements — they collapse to content size.
-// We use `use_platform_information()` to get the actual viewport
-// dimensions and set them explicitly on the backdrop rect.
+// Mirrors Freya's own PopupBackground implementation:
+//   - `layer: "-2000"` on the outer rect sets the z-layer so this
+//     renders above all normal content regardless of document order.
+//   - `width: "100v"` / `height: "100v"` are viewport units (like CSS
+//     vw/vh) and work correctly at any DPI/scale-factor.  Neither
+//     `"fill"` nor explicit pixel values work for globally-positioned
+//     elements.
+//   - Two separate rects share the same global position: one for the
+//     semi-transparent backdrop, one (with flex centering) for the card.
 
 #[component]
 fn OverwriteDialog(
@@ -413,99 +418,104 @@ fn OverwriteDialog(
     on_confirm: EventHandler<MouseEvent>,
     on_cancel: EventHandler<MouseEvent>,
 ) -> Element {
-    let platform = use_platform_information();
-    let vp = platform.read().viewport_size;
-    let vw = vp.width as u32;
-    let vh = vp.height as u32;
-
     rsx!(
-        // Full-screen dimmed backdrop — explicit pixel dimensions from viewport
         rect {
-            position: "global",
-            position_top: "0",
-            position_left: "0",
-            width: "{vw}",
-            height: "{vh}",
-            background: "rgb(0, 0, 0, 0.45)",
-            main_align: "center",
-            cross_align: "center",
+            layer: "-2000",
 
-            // Dialog card
+            // ── Backdrop ──────────────────────────────────────────────
             rect {
-                width: "480",
-                background: "rgb(255, 255, 255)",
-                corner_radius: "16",
-                padding: "28",
-                direction: "vertical",
-                spacing: "16",
-                shadow: "0 20 60 0 rgb(0, 0, 0, 0.25)",
+                width: "100v",
+                height: "100v",
+                position: "global",
+                position_top: "0",
+                position_left: "0",
+                background: "rgb(0, 0, 0, 150)",
+                onclick: move |e| on_cancel.call(e),
+            }
 
-                // Title
-                label {
-                    font_size: "17",
-                    font_weight: "bold",
-                    color: "rgb(0, 0, 0)",
-                    "Overwrite existing files?"
-                }
+            // ── Centered card (same position, rendered on top) ────────
+            rect {
+                width: "100v",
+                height: "100v",
+                position: "global",
+                position_top: "0",
+                position_left: "0",
+                main_align: "center",
+                cross_align: "center",
 
-                // Subtitle
-                label {
-                    font_size: "13",
-                    color: "rgb(100, 100, 100)",
-                    "The following output files already exist and will be replaced:"
-                }
-
-                // Path list
                 rect {
-                    width: "fill",
-                    background: "rgb(242, 242, 247)",
-                    corner_radius: "8",
-                    padding: "12",
+                    width: "480",
+                    background: "rgb(255, 255, 255)",
+                    corner_radius: "16",
+                    padding: "28",
                     direction: "vertical",
-                    spacing: "6",
+                    spacing: "16",
+                    shadow: "0 20 60 0 rgb(0, 0, 0, 80)",
 
-                    for path in paths.iter() {
-                        label {
-                            font_size: "11",
-                            color: "rgb(60, 60, 67)",
-                            "• {path}"
-                        }
+                    label {
+                        font_size: "17",
+                        font_weight: "bold",
+                        color: "rgb(0, 0, 0)",
+                        "Overwrite existing files?"
                     }
-                }
 
-                // Buttons row
-                rect {
-                    width: "fill",
-                    direction: "horizontal",
-                    spacing: "10",
-                    main_align: "end",
+                    label {
+                        font_size: "13",
+                        color: "rgb(100, 100, 100)",
+                        "The following output files already exist and will be replaced:"
+                    }
 
-                    // Cancel
+                    // Scrollable path list (in case there are many files)
                     rect {
+                        width: "fill",
+                        height: "120",
                         background: "rgb(242, 242, 247)",
                         corner_radius: "8",
-                        padding: "10 20",
-                        onclick: move |e| on_cancel.call(e),
+                        overflow: "clip",
 
-                        label {
-                            font_size: "14",
-                            color: "rgb(60, 60, 67)",
-                            "Cancel"
+                        ScrollView {
+                            width: "fill",
+                            height: "fill",
+                            direction: "vertical",
+
+                            rect {
+                                width: "fill",
+                                padding: "10",
+                                direction: "vertical",
+                                spacing: "6",
+
+                                for path in paths.iter() {
+                                    label {
+                                        font_size: "11",
+                                        color: "rgb(60, 60, 67)",
+                                        "• {path}"
+                                    }
+                                }
+                            }
                         }
                     }
 
-                    // Overwrite (destructive red)
+                    // Buttons
                     rect {
-                        background: "rgb(255, 59, 48)",
-                        corner_radius: "8",
-                        padding: "10 20",
-                        onclick: move |e| on_confirm.call(e),
+                        width: "fill",
+                        direction: "horizontal",
+                        spacing: "10",
+                        main_align: "end",
 
-                        label {
-                            font_size: "14",
-                            font_weight: "bold",
-                            color: "rgb(255, 255, 255)",
-                            "Overwrite"
+                        rect {
+                            background: "rgb(242, 242, 247)",
+                            corner_radius: "8",
+                            padding: "10 20",
+                            onclick: move |e| on_cancel.call(e),
+                            label { font_size: "14", color: "rgb(60, 60, 67)", "Cancel" }
+                        }
+
+                        rect {
+                            background: "rgb(255, 59, 48)",
+                            corner_radius: "8",
+                            padding: "10 20",
+                            onclick: move |e| on_confirm.call(e),
+                            label { font_size: "14", font_weight: "bold", color: "rgb(255, 255, 255)", "Overwrite" }
                         }
                     }
                 }
