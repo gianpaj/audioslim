@@ -625,6 +625,7 @@ fn DropZoneArea(on_pick: EventHandler<MouseEvent>) -> Element {
             spacing: "10",
             onmouseenter: move |_| hovered.set(true),
             onmouseleave: move |_| hovered.set(false),
+            onclick: move |e| on_pick.call(e),
 
             label {
                 font_size: "30",
@@ -641,7 +642,6 @@ fn DropZoneArea(on_pick: EventHandler<MouseEvent>) -> Element {
                 background: "rgb(0, 122, 255)",
                 corner_radius: "8",
                 padding: "8 18",
-                onclick: move |e| on_pick.call(e),
 
                 label {
                     font_size: "14",
